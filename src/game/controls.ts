@@ -1,0 +1,86 @@
+import type { Direction } from './world.ts';
+import { DoubleTap } from './dash.ts';
+
+const bindings: Record<string, Direction> = {
+  ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down',
+  ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
+};
+
+export class Controls {
+  private onClear?: () => void;
+  constructor(onClear?: () => void) { this.onClear = onClear; }
+  private held = new Map<string, Direction>();
+  private tapped?: Direction;
+  private dash?: Direction;
+  private doubleTap = new DoubleTap();
+  private controller = new AbortController();
+
+  attach(canvas: HTMLCanvasElement): void {
+    const { signal } = this.controller;
+    canvas.tabIndex = 0;
+    canvas.setAttribute('role', 'application');
+    canvas.setAttribute('aria-label', 'ひだまりオフィス。床をタップ・クリックして移動。矢印キーまたはWASDも使えます。Tabキーでマップから移動できます。');
+    canvas.addEventListener('pointerdown', () => canvas.focus({ preventScroll: true }), { signal });
+    canvas.addEventListener('keydown', (event) => {
+      const direction = bindings[event.code];
+      if (direction && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        this.onClear?.();
+        event.preventDefault();
+        if (event.code.startsWith('Arrow') && this.doubleTap.press(direction, performance.now(), event.repeat)) this.dash = direction;
+        this.held.set(event.code, direction);
+        if (!event.repeat) this.tapped = direction;
+      }
+    }, { signal });
+    canvas.addEventListener('keyup', (event) => {
+      if (bindings[event.code]) {
+        event.preventDefault();
+        this.held.delete(event.code);
+      }
+    }, { signal });
+    canvas.addEventListener('blur', () => this.clear(), { signal });
+    window.addEventListener('blur', () => this.clear(), { signal });
+    document.addEventListener('visibilitychange', () => this.clear(), { signal });
+
+    document.querySelectorAll<HTMLButtonElement>('[data-direction]').forEach((button) => {
+      button.addEventListener('pointerdown', (event) => {
+        this.onClear?.();
+        event.preventDefault();
+        button.setPointerCapture(event.pointerId);
+        const direction = button.dataset.direction as Direction;
+        if (this.doubleTap.press(direction, performance.now())) this.dash = direction;
+        this.held.set(`pointer-${event.pointerId}`, direction);
+        this.tapped = button.dataset.direction as Direction;
+        button.classList.add('pressed');
+      }, { signal });
+      const release = (event: PointerEvent) => {
+        const wasHeld = this.held.delete(`pointer-${event.pointerId}`);
+        if (event.type === 'pointercancel' || event.type === 'lostpointercapture' && wasHeld) {
+          this.tapped = undefined; this.dash = undefined; this.doubleTap.clear();
+        }
+        button.classList.remove('pressed');
+      };
+      button.addEventListener('pointerup', release, { signal });
+      button.addEventListener('pointercancel', release, { signal });
+      button.addEventListener('lostpointercapture', release, { signal });
+      // A keyboard or assistive-technology click moves one tile.
+      button.addEventListener('click', (event) => {
+        if (event.detail === 0) { this.onClear?.(); button.dispatchEvent(new CustomEvent('walk-step', { bubbles: true, detail: button.dataset.direction })); }
+      }, { signal });
+    });
+  }
+
+  direction(): Direction | undefined {
+    const next = [...this.held.values()].at(-1) ?? this.tapped;
+    this.tapped = undefined;
+    return next;
+  }
+  takeDash(): Direction | undefined { const dash = this.dash; this.dash = undefined; if (dash) this.tapped = undefined; return dash; }
+  clear(): void {
+    this.onClear?.();
+    this.dash = undefined; this.doubleTap.clear();
+    this.held.clear();
+    this.tapped = undefined;
+    document.querySelectorAll('.pressed').forEach((button) => button.classList.remove('pressed'));
+  }
+  destroy(): void { this.clear(); this.controller.abort(); }
+}
